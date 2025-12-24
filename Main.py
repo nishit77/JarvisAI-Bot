@@ -2,42 +2,44 @@
 # IMPORTS
 # -------------------------
 
-# Speech recognition library to convert microphone audio into text
+# Converts microphone audio into text using Google Speech Recognition
 import speech_recognition as sr
 
-# Used to open websites (YouTube, Google, etc.) in the browser
+# Opens URLs in the default web browser
 import webbrowser
 
-# Windows-only library to play short system sounds (yes.wav)
+# Windows-only library to play short system sounds (used for yes.wav)
 import winsound
 
-# Used for delays (sleep)
+# Used for pauses / delays between actions
 import time
 
-# Google Text-to-Speech: converts text into spoken audio (MP3)
+# Google Text-to-Speech: converts text into spoken MP3 audio
 from gtts import gTTS
 
-# Plays audio files (used to play the generated MP3)
+# Plays audio files (used for playing generated speech)
 from playsound import playsound
 
-# Used for file handling (delete temp audio file)
+# Used for file handling (creating & deleting temporary audio files)
 import os
 
-# Used to make HTTP requests (News API, YouTube search)
+# Used to make HTTP requests (News API, YouTube search page)
 import requests
 
-# Wikipedia library to fetch summaries
+# Used to fetch summaries from Wikipedia
 import wikipedia
 
-# Your custom music library file (dictionary of song → YouTube links)
+# Custom module containing predefined song → YouTube URL mappings
 import musicLibrary
 
-# Regular expressions: used to extract YouTube video IDs from HTML
+# Regular expressions: used to extract video IDs from raw HTML
 import re
 
+# Used to load environment variables securely
 from dotenv import load_dotenv
 load_dotenv()
 
+# Read News API key from .env file
 import os
 newsapi = os.getenv("NEWSAPI_KEY")
 
@@ -47,18 +49,21 @@ newsapi = os.getenv("NEWSAPI_KEY")
 # -------------------------
 
 
-# Create a recognizer object (this does the speech recognition)
+# Create a speech recognizer object
+# This object handles converting speech to text
 recognizer = sr.Recognizer()
+
 
 # -------------------------
 # MICROPHONE TUNING
 # -------------------------
 
-# Fixed energy threshold:
-# If sound is quieter than this, it will be ignored as noise
+# Fixed energy threshold
+# Sounds below this volume are treated as background noise
 recognizer.energy_threshold = 300
 
-# Disable auto-adjustment so recognition is consistent
+# Disable automatic energy adjustment
+# Keeps recognition behavior consistent
 recognizer.dynamic_energy_threshold = False
 
 
@@ -68,20 +73,30 @@ recognizer.dynamic_energy_threshold = False
 
 def speak(text):
     """
-    Converts text to speech using Google TTS.
-    Saves audio as a temporary MP3, plays it, then deletes it.
+    Converts text into speech using Google Text-to-Speech.
+    
+    Flow:
+    1. Convert text → speech
+    2. Save as temporary MP3 file
+    3. Play the audio
+    4. Delete the file after playing
+
     """
     tts = gTTS(text=text, lang='en')
     filename = "temp_audio.mp3"
     tts.save(filename)
     playsound(filename)
     os.remove(filename)
-    time.sleep(0.1)  # tiny pause so audio doesn't overlap
+
+    # Small pause to prevent audio overlap
+    time.sleep(0.1)
 
 
 def speak_yes():
     """
-    Plays a short confirmation sound when wake word is detected.
+    Plays a short confirmation sound
+    Used when wake word 'Jarvis' is detected
+
     """
     winsound.PlaySound("yes.wav", winsound.SND_FILENAME | winsound.SND_ASYNC)
 
@@ -92,22 +107,30 @@ def speak_yes():
 
 def processCommand(command):
     """
-    Takes the recognized voice command and decides what action to perform.
+    Takes the recognized speech text
+    and decides what action Jarvis should perform.
+
     """
-    command = command.lower()
+    command = command.lower()  # normalize command
+
 
     # -------------------------
     # WEBSITE COMMANDS
     # -------------------------
+
+    # Opens Google
     if "open google" in command:
         webbrowser.open("http://www.google.com")
 
+    # Opens YouTube
     elif "open youtube" in command:
         webbrowser.open("http://www.youtube.com")
 
+    # Opens Facebook
     elif "open facebook" in command:
         webbrowser.open("http://www.facebook.com")
 
+    # Opens LinkedIn
     elif "open linkedin" in command:
         webbrowser.open("http://www.linkedin.com")  
 
@@ -115,16 +138,18 @@ def processCommand(command):
     # -------------------------
     # MUSIC COMMAND
     # -------------------------
+
     elif "play" in command:
         # Extract song name from command
         # Example: "play skyfall" → "skyfall"
         song_name = command.replace("play", "").strip().lower()
 
-        # CASE 1: Song exists in your musicLibrary.py
+        # CASE 1:
+        # Song exists in musicLibrary.py
         if song_name in musicLibrary.music:
             url = musicLibrary.music[song_name]
 
-            # Add autoplay=1 to YouTube URLs
+            # If YouTube link exists, force autoplay
             if "youtube.com/watch" in url:
                 if "?" in url:
                     url += "&autoplay=1"
@@ -134,13 +159,16 @@ def processCommand(command):
             speak(f"Playing {song_name}")
             webbrowser.open(url)
 
-        # CASE 2: Song NOT in library → Search YouTube automatically
+        # CASE 2:
+        # Song NOT found in music library
+        # → Perform YouTube search automatically
         else:
-            # Use quotes for more accurate search results
+            # Use quotes to improve search accuracy
             search_query = f'"{song_name}"'
             search_url = f"https://www.youtube.com/results?search_query={search_query.replace(' ', '+')}"
 
-            # Fake browser headers (prevents YouTube blocking the request)
+            # Fake browser headers
+            # Prevents YouTube from blocking the request
             headers = {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -150,15 +178,17 @@ def processCommand(command):
             }
 
             try:
-                # Fetch YouTube search page HTML
+                # Fetch the YouTube search results page
                 r = requests.get(search_url, headers=headers)
 
-                # REGEX:
-                # Finds all video IDs in the page (each ID is exactly 11 chars)
+                # REGEX explanation:
+                # Finds all video IDs in the page
+                # Each YouTube video ID is exactly 11 characters
                 video_ids = re.findall(r"watch\?v=(\S{11})", r.text)
 
                 if video_ids:
-                    # Remove duplicates and keep top few results
+                    # Remove duplicate video IDs
+                    # Keep only the top few search results
                     unique_ids = []
                     for vid in video_ids:
                         if vid not in unique_ids:
@@ -166,18 +196,19 @@ def processCommand(command):
                         if len(unique_ids) >= 3:
                             break
 
-                    # Pick the first (best-ranked) video
+                    # Choose the first (top-ranked) video
                     best_url = f"https://www.youtube.com/watch?v={unique_ids[0]}&autoplay=1"
 
                     speak(f"Playing {song_name}")
                     webbrowser.open(best_url)
 
                 else:
-                    # If no video found, open search results page
+                    # Fallback: open YouTube search page
                     speak("I couldn't find a link. Opening search results.")
                     webbrowser.open(search_url)
 
             except Exception as e:
+                # Handles network / parsing errors
                 print(f"Error: {e}")
                 speak("I ran into an issue searching YouTube.")
 
@@ -185,7 +216,9 @@ def processCommand(command):
     # -------------------------
     # NEWS COMMAND
     # -------------------------
+
     elif "news" in command:
+        # Fetch top US headlines from NewsAPI
         r = requests.get(
             f"https://newsapi.org/v2/top-headlines?country=us&apiKey={newsapi.strip()}"
         )
@@ -194,9 +227,11 @@ def processCommand(command):
             data = r.json()
             articles = data.get('articles', [])
 
+            # Read out the top 5 headlines
             for article in articles[:5]:
                 title = article.get("title")
                 if title:
+                    print("•", title)
                     speak(title)
                     time.sleep(0.5)
         else:
@@ -206,6 +241,8 @@ def processCommand(command):
     # -------------------------
     # WIKIPEDIA COMMAND
     # -------------------------
+
+
     elif (
         "who" in command or "who's" in command or
         "what" in command or "what's" in command or
@@ -214,7 +251,8 @@ def processCommand(command):
         "whom" in command or "to whom" in command or
         "wikipedia" in command
     ):
-        # Clean the question to extract only the topic
+        # Clean the question
+        # Remove filler words to extract the topic only
         topic = (
             command.replace("wikipedia", "")
                    .replace("who is", "")
@@ -231,18 +269,28 @@ def processCommand(command):
         )
 
         try:
+            # Fetch a short Wikipedia summary
             summary = wikipedia.summary(topic, sentences=2)
+
+            # Print first, then speak
+            print("\nWikipedia Result:")
+            print(summary)
+
             speak(summary)
+
         except Exception:
             speak("Sorry, I could not find information on that topic.")
 
     else:
+        # Fallback for unknown commands
         speak("Sorry, I did not understand that command.")
 
 
 # -------------------------
 # MAIN LOOP (JARVIS BRAIN)
 # -------------------------
+
+
 if __name__ == "__main__":
     speak("Initializing Jarvis")
     print("Jarvis is ready...")
@@ -285,12 +333,16 @@ if __name__ == "__main__":
                         processCommand(c)
 
                     except sr.UnknownValueError:
-                        # Silent ignore if speech not understood
+                        # Ignore unintelligible speech silently
                         pass
 
             except sr.RequestError:
+                # This error occurs when the speech recognition service (Google API)
+                # cannot be reached due to internet issues or service downtime.
                 print("Speech service error")
                 speak("Speech service is unavailable.")
 
         except Exception as e:
-            print(f"An unexpected error occurred: {e}")
+            # It catches ANY unexpected error that was not handled above.
+            print("Error:", e)
+            speak("Something went wrong.")

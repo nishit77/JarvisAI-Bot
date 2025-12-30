@@ -2,45 +2,24 @@
 # IMPORTS
 # -------------------------
 
-# Converts microphone audio into text using Google Speech Recognition
+import json
+import simpleaudio as sa
 import speech_recognition as sr
-
-# Opens URLs in the default web browser
 import webbrowser
-
-# Windows-only library to play short system sounds (used for yes.wav)
 import winsound
-
-# Used for pauses / delays between actions
 import time
-
-# Google Text-to-Speech: converts text into spoken MP3 audio
 from gtts import gTTS
-
-# Plays audio files (used for playing generated speech)
 from playsound import playsound
-
-# Used for file handling (creating & deleting temporary audio files)
 import os
-
-# Used to make HTTP requests (News API, YouTube search page)
 import requests
-
-# Used to fetch summaries from Wikipedia
 import wikipedia
-
-# Custom module containing predefined song → YouTube URL mappings
 import musicLibrary
-
-# Regular expressions: used to extract video IDs from raw HTML
 import re
-
-# Used to load environment variables securely
 from dotenv import load_dotenv
+
 load_dotenv()
 
-# Read News API key from .env file
-import os
+# Read News API key
 newsapi = os.getenv("NEWSAPI_KEY")
 
 
@@ -48,127 +27,97 @@ newsapi = os.getenv("NEWSAPI_KEY")
 # SETTINGS
 # -------------------------
 
-
-# Create a speech recognizer object
-# This object handles converting speech to text
 recognizer = sr.Recognizer()
 
+with sr.Microphone() as source:
+    print("Calibrating microphone...")
+    recognizer.adjust_for_ambient_noise(source, duration=1)
+    print("Calibration complete")
 
-# -------------------------
-# MICROPHONE TUNING
-# -------------------------
-
-# Fixed energy threshold
-# Sounds below this volume are treated as background noise
 recognizer.energy_threshold = 300
-
-# Disable automatic energy adjustment
-# Keeps recognition behavior consistent
 recognizer.dynamic_energy_threshold = False
 
 
 # -------------------------
-# VOICE OUTPUT FUNCTIONS
+# VOICE OUTPUT (gTTS ONLY)
 # -------------------------
 
 def speak(text):
-    """
-    Converts text into speech using Google Text-to-Speech.
-    
-    Flow:
-    1. Convert text → speech
-    2. Save as temporary MP3 file
-    3. Play the audio
-    4. Delete the file after playing
-
-    """
-    tts = gTTS(text=text, lang='en')
-    filename = "temp_audio.mp3"
-    tts.save(filename)
-    playsound(filename)
-    os.remove(filename)
-
-    # Small pause to prevent audio overlap
-    time.sleep(0.1)
+    temp_file = "temp_audio.mp3"
+    tts = gTTS(text=text, lang="en")
+    tts.save(temp_file)
+    playsound(temp_file)
+    os.remove(temp_file)
 
 
 def speak_yes():
-    """
-    Plays a short confirmation sound
-    Used when wake word 'Jarvis' is detected
+    winsound.PlaySound("yes.wav", winsound.SND_FILENAME)
 
-    """
-    winsound.PlaySound("yes.wav", winsound.SND_FILENAME | winsound.SND_ASYNC)
 
+
+
+def ask_openrouter(prompt: str) -> str:
+    """
+    Send a question to OpenRouter using MiMo-V2-Flash (free).
+    """
+    url = "https://openrouter.ai/api/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "xiaomi/mimo-v2-flash:free",
+        "messages": [
+            {"role": "user", "content": prompt}
+        ]
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        return data["choices"][0]["message"]["content"].strip()
+
+    except Exception as e:
+        print("OpenRouter API error:", e)
+        return "Sorry, I had an issue contacting the AI service."
 
 # -------------------------
 # COMMAND PROCESSOR
 # -------------------------
 
 def processCommand(command):
-    """
-    Takes the recognized speech text
-    and decides what action Jarvis should perform.
+    command = command.lower()
 
-    """
-    command = command.lower()  # normalize command
-
-
-    # -------------------------
-    # WEBSITE COMMANDS
-    # -------------------------
-
-    # Opens Google
     if "open google" in command:
-        webbrowser.open("http://www.google.com")
+        webbrowser.open("https://www.google.com")
 
-    # Opens YouTube
     elif "open youtube" in command:
-        webbrowser.open("http://www.youtube.com")
+        webbrowser.open("https://www.youtube.com")
 
-    # Opens Facebook
     elif "open facebook" in command:
-        webbrowser.open("http://www.facebook.com")
+        webbrowser.open("https://www.facebook.com")
 
-    # Opens LinkedIn
     elif "open linkedin" in command:
-        webbrowser.open("http://www.linkedin.com")  
-
-
-    # -------------------------
-    # MUSIC COMMAND
-    # -------------------------
+        webbrowser.open("https://www.linkedin.com")
 
     elif "play" in command:
-        # Extract song name from command
-        # Example: "play skyfall" → "skyfall"
         song_name = command.replace("play", "").strip().lower()
 
-        # CASE 1:
-        # Song exists in musicLibrary.py
         if song_name in musicLibrary.music:
             url = musicLibrary.music[song_name]
-
-            # If YouTube link exists, force autoplay
             if "youtube.com/watch" in url:
-                if "?" in url:
-                    url += "&autoplay=1"
-                else:
-                    url += "?autoplay=1"
-
+                url += "&autoplay=1"
             speak(f"Playing {song_name}")
             webbrowser.open(url)
 
-        # CASE 2:
-        # Song NOT found in music library
-        # → Perform YouTube search automatically
         else:
-            # Use quotes to improve search accuracy
             search_query = f'"{song_name}"'
             search_url = f"https://www.youtube.com/results?search_query={search_query.replace(' ', '+')}"
 
-            # Fake browser headers
-            # Prevents YouTube from blocking the request
             headers = {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -178,56 +127,28 @@ def processCommand(command):
             }
 
             try:
-                # Fetch the YouTube search results page
                 r = requests.get(search_url, headers=headers)
-
-                # REGEX explanation:
-                # Finds all video IDs in the page
-                # Each YouTube video ID is exactly 11 characters
                 video_ids = re.findall(r"watch\?v=(\S{11})", r.text)
 
                 if video_ids:
-                    # Remove duplicate video IDs
-                    # Keep only the top few search results
-                    unique_ids = []
-                    for vid in video_ids:
-                        if vid not in unique_ids:
-                            unique_ids.append(vid)
-                        if len(unique_ids) >= 3:
-                            break
-
-                    # Choose the first (top-ranked) video
-                    best_url = f"https://www.youtube.com/watch?v={unique_ids[0]}&autoplay=1"
-
+                    best_url = f"https://www.youtube.com/watch?v={video_ids[0]}&autoplay=1"
                     speak(f"Playing {song_name}")
                     webbrowser.open(best_url)
-
                 else:
-                    # Fallback: open YouTube search page
-                    speak("I couldn't find a link. Opening search results.")
+                    speak("Opening YouTube search results.")
                     webbrowser.open(search_url)
 
             except Exception as e:
-                # Handles network / parsing errors
-                print(f"Error: {e}")
-                speak("I ran into an issue searching YouTube.")
-
-
-    # -------------------------
-    # NEWS COMMAND
-    # -------------------------
+                print("Error:", e)
+                speak("I ran into an issue playing the song.")
 
     elif "news" in command:
-        # Fetch top US headlines from NewsAPI
         r = requests.get(
             f"https://newsapi.org/v2/top-headlines?country=us&apiKey={newsapi.strip()}"
         )
 
         if r.status_code == 200:
-            data = r.json()
-            articles = data.get('articles', [])
-
-            # Read out the top 5 headlines
+            articles = r.json().get("articles", [])
             for article in articles[:5]:
                 title = article.get("title")
                 if title:
@@ -235,114 +156,62 @@ def processCommand(command):
                     speak(title)
                     time.sleep(0.5)
         else:
-            speak("Sorry, I could not fetch the news")
+            speak("I could not fetch the news.")
 
-
-    # -------------------------
-    # WIKIPEDIA COMMAND
-    # -------------------------
-
-
-    elif (
-        "who" in command or "who's" in command or
-        "what" in command or "what's" in command or
-        "where" in command or "where's" in command or
-        "how" in command or "how's" in command or
-        "whom" in command or "to whom" in command or
-        "wikipedia" in command
-    ):
-        # Clean the question
-        # Remove filler words to extract the topic only
-        topic = (
-            command.replace("wikipedia", "")
-                   .replace("who is", "")
-                   .replace("who's", "")
-                   .replace("what is", "")
-                   .replace("what's", "")
-                   .replace("where is", "")
-                   .replace("where's", "")
-                   .replace("how is", "")
-                   .replace("how's", "")
-                   .replace("whom", "")
-                   .replace("to whom", "")
-                   .strip()
-        )
-
-        try:
-            # Fetch a short Wikipedia summary
-            summary = wikipedia.summary(topic, sentences=2)
-
-            # Print first, then speak
-            print("\nWikipedia Result:")
-            print(summary)
-
-            speak(summary)
-
-        except Exception:
-            speak("Sorry, I could not find information on that topic.")
-
+    # --- MODE 3: EVERYTHING ELSE GOES TO AI ---
     else:
-        # Fallback for unknown commands
-        speak("Sorry, I did not understand that command.")
+        print("\nAsking AI about:", command)
+        speak("Let me check that for you.")
 
+        answer = ask_openrouter(
+            f"Answer this clearly and briefly for a voice assistant user: {command}"
+)
+
+        print("\nAI Result:")
+        print(answer)
+        speak(answer)
 
 # -------------------------
-# MAIN LOOP (JARVIS BRAIN)
+# MAIN LOOP
 # -------------------------
 
+is_listening = True
+time.sleep(1.5)
 
 if __name__ == "__main__":
     speak("Initializing Jarvis")
     print("Jarvis is ready...")
+    print("Listening for wake word...")
 
     while True:
-        try:
-            # -------------------------
-            # WAKE WORD LISTENING
-            # -------------------------
-            with sr.Microphone() as source:
-                print("Listening for wake word...")
-                recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                audio = recognizer.listen(source)
+        with sr.Microphone() as source:
 
-            try:
-                # Convert wake word audio to text
-                word = recognizer.recognize_google(audio, language='en-US')
-                print("Heard:", word)
+            # WAKE WORD MODE
+            if is_listening:
+                try:
+                    audio = recognizer.listen(source, phrase_time_limit=4)
+                    word = recognizer.recognize_google(audio)
 
-                if "jarvis" in word.lower():
-                    print("Yes!! My Master...\nJarvis Active")
-                    speak_yes()
-                    time.sleep(1)
+                    if "jarvis" in word.lower():
+                        print("Yes!! My Master...")
+                        print("Jarvis Active")
+                        speak_yes()
+                        is_listening = False
 
-                    # -------------------------
-                    # COMMAND LISTENING
-                    # -------------------------
-                    with sr.Microphone() as source:
-                        print("Listening for command...")
-                        recognizer.adjust_for_ambient_noise(source, duration=0.7)
-                        audio = recognizer.listen(
-                            source,
-                            timeout=None,
-                            phrase_time_limit=10
-                        )
+                except sr.UnknownValueError:
+                    pass
 
-                    try:
-                        c = recognizer.recognize_google(audio, language='en-US')
-                        print("Command heard:", c)
-                        processCommand(c)
+            # COMMAND MODE
+            else:
+                print("Listening for command...")
 
-                    except sr.UnknownValueError:
-                        # Ignore unintelligible speech silently
-                        pass
+                try:
+                    audio = recognizer.listen(source, phrase_time_limit=12)
+                    command = recognizer.recognize_google(audio)
+                    print("Command heard:", command)
+                    processCommand(command)
 
-            except sr.RequestError:
-                # This error occurs when the speech recognition service (Google API)
-                # cannot be reached due to internet issues or service downtime.
-                print("Speech service error")
-                speak("Speech service is unavailable.")
+                except sr.UnknownValueError:
+                    speak("I didn't catch that. Please say it again.")
 
-        except Exception as e:
-            # It catches ANY unexpected error that was not handled above.
-            print("Error:", e)
-            speak("Something went wrong.")
+                is_listening = True

@@ -1,10 +1,11 @@
-from TTS.api import TTS
+import pyttsx3
 
-tts = TTS("tts_models/en/ljspeech/tacotron2-DDC", gpu=False)
+engine = pyttsx3.init()
 
-tts.tts_to_file(
-    text="Jarvis voice system is now online.",
-    file_path="jarvis_test.wav"
-)
+voices = engine.getProperty('voices')
+engine.setProperty('voice', voices[1].id)
+engine.setProperty('rate', 170)
+engine.setProperty('volume', 1.0)
 
-print("Done")
+engine.say("Hello Nishit, this is a test.")
+engine.runAndWait()

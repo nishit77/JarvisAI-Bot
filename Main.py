@@ -3,6 +3,7 @@
 # -------------------------
 
 import json
+from click import command
 import simpleaudio as sa
 import speech_recognition as sr
 import webbrowser
@@ -10,23 +11,21 @@ import winsound
 import time
 import os
 import requests
-import wikipedia
 import musicLibrary
-import re
 from dotenv import load_dotenv
 import asyncio
 import edge_tts
 from pydub import AudioSegment
 import io
 import threading
-import wave
 import pvporcupine
 import pyaudio
 import struct
 import numpy as np
 from difflib import get_close_matches
+import re
 
-# -------------------------
+# ------------------------- 
 # MODELS / KEYS
 # -------------------------
 
@@ -57,7 +56,7 @@ stt_event = threading.Event()
 wake_event.set()   # wake-word engine starts active
 
 # -------------------------
-# TTS (edge-tts + simpleaudio)  <-- UNCHANGED
+# TTS (edge-tts + simpleaudio)  
 # -------------------------
 
 async def speak_async(text):
@@ -169,59 +168,71 @@ def fuzzy_contains(command: str, patterns, cutoff: float = 0.7) -> bool:
             return True
     return False
 
+
 # -------------------------
-# COMMAND PROCESSOR
+# SMARTER MUSIC INTENT + ENTITY EXTRACTION
+# -------------------------
+
+
+
+def extract_music_intent(command: str):
+    """
+    Detect if the command is about playing music and extract the song/artist.
+    Returns: (intent:str, entity:str or None)
+    """
+    command = command.lower()
+
+    # Music-related keywords
+    music_keywords = ["play", "hear", "song", "music", "i wanna hear", "i want to hear", "listen to"]
+    
+    for k in music_keywords:
+        if k in command:
+            # Extract entity: remove the keyword from command
+            entity = command.replace(k, "").strip()
+            return "play_music", entity if entity else None
+
+    return None, None
+
+
+
+# -------------------------
+# UPDATE processCommand() TO USE INTENT
 # -------------------------
 
 def processCommand(command):
     command = command.lower()
     print("Processing command:", repr(command))
 
-    # ----- basic site/app commands with fuzzy matching -----
+    # ----- intent detection -----
+    intent, entity = extract_music_intent(command)
 
-    if fuzzy_contains(command, ["open google", "google"]):
-        webbrowser.open("https://www.google.com")
-        return
+    if intent == "play_music" and entity:
+        song_name = entity.lower()
 
-    elif fuzzy_contains(command, ["open youtube", "you tube", "utube", "youtube"]):
-        webbrowser.open("https://www.youtube.com")
-        return
-
-    elif fuzzy_contains(command, ["open facebook", "facebook", "fb"]):
-        webbrowser.open("https://www.facebook.com")
-        return
-
-    elif fuzzy_contains(command, ["open linkedin", "link din", "linkedin"]):
-        webbrowser.open("https://www.linkedin.com")
-        return
-
-    # ----- play music with fuzzy matching for Indian names/songs -----
-
-    elif "play" in command:
-        # Remove "play" and punctuation that often appears in STT
-        song_name = command.replace("play", "")
-        song_name = song_name.replace(",", " ").replace(".", " ").strip().lower()
-
-        # 1) Try direct match first
+        # 1) Check local library first
         if song_name in musicLibrary.music:
-            matched = song_name
-        else:
-            # 2) Try fuzzy match against known songs
-            all_songs = list(musicLibrary.music.keys())
-            matched = fuzzy_best_match(song_name, all_songs, cutoff=0.75)
+            url = musicLibrary.music[song_name]
+            if "youtube.com/watch" in url and "autoplay=1" not in url:
+                url += "&autoplay=1"
+            speak(f"Playing {song_name}")
+            webbrowser.open(url)
+            return
 
+        # 2) Fuzzy match local songs
+        all_songs = list(musicLibrary.music.keys())
+        matches = get_close_matches(song_name, all_songs, n=1, cutoff=0.45)
+        matched = matches[0] if matches else None
         if matched:
             url = musicLibrary.music[matched]
-            if "youtube.com/watch" in url:
+            if "youtube.com/watch" in url and "autoplay=1" not in url:
                 url += "&autoplay=1"
             speak(f"Playing {matched}")
             webbrowser.open(url)
             return
 
-        # 3) Fallback to YouTube search if not in local library
-        speak("Searching on YouTube.")
-        search_query = f'"{song_name}"'
-        search_url = f"https://www.youtube.com/results?search_query={search_query.replace(' ', '+')}"
+        # 3) Fallback: YouTube search
+        search_query = song_name.replace(" ", "+")
+        search_url = f"https://www.youtube.com/results?search_query={search_query}"
 
         headers = {
             "User-Agent": (
@@ -236,53 +247,87 @@ def processCommand(command):
             video_ids = re.findall(r"watch\?v=(\S{11})", r.text)
 
             if video_ids:
-                best_url = f"https://www.youtube.com/watch?v={video_ids[0]}&autoplay=1"
-                speak(f"Playing {song_name}")
+                top_video_id = video_ids[0]
+                best_url = f"https://www.youtube.com/watch?v={top_video_id}&autoplay=1"
+                speak(f"Playing {song_name} from YouTube")
                 webbrowser.open(best_url)
             else:
-                speak("Opening YouTube search results.")
+                speak("Couldn't find the song on YouTube, opening search results.")
                 webbrowser.open(search_url)
 
         except Exception as e:
-            print("Error:", e)
-            speak("I ran into an issue playing the song.")
-        return
+            print("YouTube search error:", e)
+            speak("I ran into an issue searching for the song.")
+            return
 
-    # ----- news -----
+    elif intent == "open_website" and entity:
+        speak(f"Opening {entity}")
+        webbrowser.open(entity)
 
-    elif "news" in command:
-        r = requests.get(
-            f"https://newsapi.org/v2/top-headlines?country=us&apiKey={newsapi.strip()}"
-        )
+    elif intent == "get_news":
+        try:
+            r = requests.get(f"https://newsapi.org/v2/top-headlines?country=us&apiKey={newsapi.strip()}")
+            if r.status_code == 200:
+                articles = r.json().get("articles", [])
+                for article in articles[:5]:
+                    title = article.get("title")
+                    if title:
+                        print("•", title)
+                        speak(title)
+                        time.sleep(0.5)
+            else:
+                speak("I could not fetch the news.")
+        except Exception as e:
+            print("News error:", e)
+            speak("I ran into an issue fetching news.")
 
-        if r.status_code == 200:
-            articles = r.json().get("articles", [])
-            for article in articles[:5]:
-                title = article.get("title")
-                if title:
-                    print("•", title)
-                    speak(title)
-                    time.sleep(0.5)
-        else:
-            speak("I could not fetch the news.")
-        return
-
-    # ----- default: ask AI -----
-
-    else:
-        print("\nAsking AI about:", command)
+    elif intent == "unknown":
+        print("\nUnknown command, asking AI...")
         speak("Let me check that for you.")
 
         def run_ai():
-            answer = ask_openrouter(
-                f"Answer this clearly and briefly for a voice assistant user: {command}"
-            )
+            answer = ask_openrouter(f"Answer this clearly and briefly for a voice assistant user: {command}")
             print("\nAI Result:")
             print(answer)
             speak(answer)
 
         threading.Thread(target=run_ai, daemon=True).start()
         return
+
+
+
+    elif intent == "open_website" and entity:
+        speak(f"Opening {entity}")
+        webbrowser.open(entity)
+
+    elif intent == "get_news":
+        try:
+            r = requests.get(f"https://newsapi.org/v2/top-headlines?country=us&apiKey={newsapi.strip()}")
+            if r.status_code == 200:
+                articles = r.json().get("articles", [])
+                for article in articles[:5]:
+                    title = article.get("title")
+                    if title:
+                        print("•", title)
+                        speak(title)
+                        time.sleep(0.5)
+            else:
+                speak("I could not fetch the news.")
+        except Exception as e:
+            print("News error:", e)
+            speak("I ran into an issue fetching news.")
+
+    else:
+        print("\nUnknown command, asking AI...")
+        speak("Let me check that for you.")
+        def run_ai():
+            answer = ask_openrouter(f"Answer this clearly and briefly for a voice assistant user: {command}")
+            print("\nAI Result:")
+            print(answer)
+            speak(answer)
+        threading.Thread(target=run_ai, daemon=True).start()
+        return
+
 
 # -------------------------
 # WAKE-WORD LISTENER (PORCUPINE)
@@ -299,6 +344,7 @@ def wake_word_listener():
     )
 
     print("Wake-word engine running...")
+    time.sleep(2)
 
     while True:
         # Only run when wake_event is set
@@ -341,7 +387,8 @@ def stt_listener():
 
             try:
                 # phrase_time_limit to keep it snappy
-                audio = recognizer.listen(source, timeout=3, phrase_time_limit=5)
+                recognizer.pause_threshold = 2
+                audio = recognizer.listen(source)
                 text = transcribe_google(audio)
 
                 if not text:
@@ -374,6 +421,7 @@ if __name__ == "__main__":
     speak("Initializing Jarvis")
     print("Jarvis is ready...")
     print("Say 'Jarvis' to wake me up.")
+    
 
     # Keep main thread alive
     while True:
